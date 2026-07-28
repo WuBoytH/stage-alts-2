@@ -241,6 +241,15 @@ unsafe fn prepare_for_load(ctx: &InlineCtx) {
         return;
     };
 
+    let load_hash = Hash40(ctx.registers[8].x());
+    if search::is_descendant_of(load_hash, Hash40::from("stage/common"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage_jack"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage_edge"))
+    {
+        return;
+    }
+
     let mut mgr = manager::MANAGER.write();
     *ALT_NUMBER.lock() = mgr.fetch_advance();
 }
