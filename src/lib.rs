@@ -102,11 +102,6 @@ unsafe fn initial_loading_hook(ctx: &mut skyline::hooks::InlineCtx) {
 static ALT_NUMBER: Mutex<Option<usize>> = Mutex::new(None);
 static IS_ONLINE: AtomicBool = AtomicBool::new(false);
 
-#[no_mangle]
-pub unsafe extern "C" fn get_match_mode_extern(main: &mut u32, submode: &mut u32) {
-    get_match_mode(main, submode)
-}
-
 #[skyline::from_offset(0x1743870)]
 unsafe fn get_match_mode(main: &mut u32, submode: &mut u32);
 
@@ -245,6 +240,15 @@ unsafe fn prepare_for_load(ctx: &InlineCtx) {
         *ALT_NUMBER.lock() = None;
         return;
     };
+
+    let load_hash = Hash40(ctx.registers[8].x());
+    if search::is_descendant_of(load_hash, Hash40::from("stage/common"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage_jack"))
+        || search::is_descendant_of(load_hash, Hash40::from("stage/resultstage_edge"))
+    {
+        return;
+    }
 
     let mut mgr = manager::MANAGER.write();
     *ALT_NUMBER.lock() = mgr.fetch_advance();
