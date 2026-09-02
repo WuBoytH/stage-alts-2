@@ -107,7 +107,7 @@ pub unsafe extern "C" fn get_match_mode_extern(main: &mut u32, submode: &mut u32
     get_match_mode(main, submode)
 }
 
-#[skyline::from_offset(0x1743870)]
+#[skyline::from_offset(0x1743870 - 0x1a0)]
 unsafe fn get_match_mode(main: &mut u32, submode: &mut u32);
 
 unsafe fn is_local_wireless() -> bool {
@@ -117,7 +117,7 @@ unsafe fn is_local_wireless() -> bool {
     main == 58
 }
 
-#[skyline::hook(offset = 0x3540860)]
+#[skyline::hook(offset = 0x3540860 + 0x5b0)]
 unsafe fn init_loaded_dir(info: &'static FilesystemInfo, index: u32) -> *mut LoadedDirectory {
     // The index will either be an index to a DirInfo (what we want) or a DirectoryOffset
     // (what we don't want)
@@ -216,7 +216,7 @@ unsafe fn init_loaded_dir(info: &'static FilesystemInfo, index: u32) -> *mut Loa
     result
 }
 
-#[skyline::hook(offset = 0x25fdf58, inline)]
+#[skyline::hook(offset = 0x25fdf58 + 0x450, inline)]
 unsafe fn prepare_for_load(ctx: &InlineCtx) {
     // Clear the alt before every stage load so a stale value from a prior match
     // can't leak into an online/arena/local-wireless load where the CSS selection
@@ -252,7 +252,7 @@ unsafe fn prepare_for_load(ctx: &InlineCtx) {
 
 unsafe fn get_place_id(stage_id: usize) -> usize {
     let start = (skyline::hooks::getRegionAddress(skyline::hooks::Region::Text) as *const u8)
-        .add(0x45489b8);
+        .add(0x45499b8);
 
     let stage_entry = start.add(stage_id * 0x48);
     let place_id = stage_entry.add(0x3c) as *const u32;
@@ -261,7 +261,7 @@ unsafe fn get_place_id(stage_id: usize) -> usize {
 
 unsafe fn get_place_hash(place_id: usize) -> hash40::Hash40 {
     let start = (skyline::hooks::getRegionAddress(skyline::hooks::Region::Text) as *const u8)
-        .add(0x4547420);
+        .add(0x4548420);
 
     let stage_place_entry = start.add(place_id * 0x28) as *const u64;
     let hash = *stage_place_entry;
@@ -269,7 +269,7 @@ unsafe fn get_place_hash(place_id: usize) -> hash40::Hash40 {
     hash40::Hash40(hash)
 }
 
-#[skyline::hook(offset = 0x16b9eb4, inline)]
+#[skyline::hook(offset = 0x16b9eb4 - 0x1a0, inline)]
 unsafe fn fetch_current_alt_from_bgm_id(ctx: &InlineCtx) {
     let bgm_id_ptr = ctx.registers[1].x() + 0x28;
 
@@ -308,7 +308,7 @@ unsafe fn arena_seq(_: &InlineCtx) {
     IS_ONLINE.store(true, Ordering::Release);
 }
 
-#[skyline::hook(offset = 0x235a64c, inline)]
+#[skyline::hook(offset = 0x235a64c + 0x450, inline)]
 unsafe fn main_menu(_: &InlineCtx) {
     IS_ONLINE.store(false, Ordering::Release);
 }
