@@ -158,9 +158,9 @@ enum SearchKey<'a> {
 }
 
 impl<'a> SearchKey<'a> {
-    pub fn new(lookup: &'a HashMap<Hash40, String>, hash: Hash40) -> Self {
-        match lookup.get(&hash) {
-            Some(unhashed) => Self::Resolved(unhashed.as_str()),
+    pub fn new(lookup: &'a HashLookup, hash: Hash40) -> Self {
+        match lookup.get(hash) {
+            Some(unhashed) => Self::Resolved(unhashed),
             None => Self::Unresolved(hash),
         }
     }
@@ -247,11 +247,7 @@ impl IndexSettable for PathListEntry {
 
 /// Sorts the folder contents (recursively) of a folder such that known hashes (all vanilla file hashes)
 /// are ordered before new files.
-pub fn sort_folder_contents(
-    name: Hash40,
-    search: &mut LoadedSearchSection,
-    lookup: &HashMap<Hash40, String>,
-) {
+pub fn sort_folder_contents(name: Hash40, search: &mut LoadedSearchSection, lookup: &HashLookup) {
     let Ok(folder) = search.get_folder_path_entry_from_hash(name) else {
         log::warn!("Failed to get folder '{}", SearchKey::new(lookup, name));
         return;
@@ -296,14 +292,75 @@ pub fn sort_folder_contents(
     current.set_index(None);
 }
 
-pub fn get_search_lookup() -> HashMap<Hash40, String> {
-    let hash_data = std::fs::read_to_string("sd:/ultimate/stage-alts/Hashes_all").unwrap();
+const HASHES_PATH: &str = "sd:/ultimate/stage-alts/Hashes_all";
 
-    HashMap::from_iter(
-        hash_data
-            .lines()
-            .map(|line| (Hash40::from(line.trim()), line.trim().to_string())),
-    )
+/// Hash to name lookup built from `Hashes_all`.
+///
+/// Only bare path components (lines without a slash) are kept. The folder sort keys on `file_name` hashes and the
+/// pretty printer formats one component at a time, so full paths were never looked up: keeping them meant holding
+/// 743k owned strings (about 80 MB) for the 62k names (about 4 MB) that are actually used. All names live in one
+/// buffer and the map stores ranges into it, so there is a single allocation for the text.
+pub struct HashLookup {
+    names: Box<str>,
+    ranges: HashMap<Hash40, (u32, u32)>,
+}
+
+impl HashLookup {
+    pub fn empty() -> Self {
+        Self {
+            names: Box::from(""),
+            ranges: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> std::io::Result<Self> {
+        use std::io::BufRead;
+
+        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        let mut names = String::new();
+        let mut ranges = HashMap::new();
+
+        for line in file.lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() || line.contains('/') {
+                continue;
+            }
+
+            let start = names.len() as u32;
+            names.push_str(line);
+            ranges.insert(Hash40::from(line), (start, names.len() as u32));
+        }
+
+        ranges.shrink_to_fit();
+
+        Ok(Self {
+            names: names.into_boxed_str(),
+            ranges,
+        })
+    }
+
+    pub fn get(&self, hash: Hash40) -> Option<&str> {
+        self.ranges
+            .get(&hash)
+            .map(|(start, end)| &self.names[*start as usize..*end as usize])
+    }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+}
+
+pub fn get_search_lookup() -> HashLookup {
+    match HashLookup::from_file(HASHES_PATH) {
+        Ok(lookup) => lookup,
+        Err(err) => {
+            log::error!(
+                "Failed to read '{HASHES_PATH}': {err}. Search folders will be sorted by hash only and logs will show hashes instead of names."
+            );
+            HashLookup::empty()
+        }
+    }
 }
 
 fn guess_hash(hash: Hash40) -> Option<(usize, bool)> {
