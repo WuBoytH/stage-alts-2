@@ -1,6 +1,6 @@
 [package]
 name = "stage-alts"
-version = "0.1.11"
+version = "0.1.12"
 authors = []
 edition = "2021"
 
