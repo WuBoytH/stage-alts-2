@@ -253,19 +253,22 @@ pub fn sort_folder_contents(name: Hash40, search: &mut LoadedSearchSection, look
         return;
     };
 
-    let mut children = BTreeMap::new();
+    // Collect then stable-sort rather than inserting into a BTreeMap: a map keyed on the sort key
+    // silently replaces any child whose key compares equal to an earlier one, which unlinks that
+    // entry from the folder's child list entirely.
+    let mut children = Vec::new();
 
     let mut index = folder.get_first_child_index();
 
     while index < 0x00FF_FFFF {
         let child = &search.get_path_list()[index];
-        children.insert(
+        children.push((
             SearchEntry {
                 key: SearchKey::new(lookup, child.file_name.hash40()),
                 is_folder: child.is_directory(),
             },
             index,
-        );
+        ));
 
         index = child.path.index() as usize;
 
@@ -282,9 +285,11 @@ pub fn sort_folder_contents(name: Hash40, search: &mut LoadedSearchSection, look
         return;
     };
 
+    children.sort_by(|(a, _), (b, _)| a.cmp(b));
+
     let mut current: &mut dyn IndexSettable = folder;
 
-    for index in children.into_values() {
+    for (_, index) in children {
         current.set_index(Some(index));
         current = &mut search.get_path_list_mut()[index];
     }
@@ -314,14 +319,16 @@ impl HashLookup {
     }
 
     pub fn from_file(path: &str) -> std::io::Result<Self> {
-        use std::io::BufRead;
-
-        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        // Read the whole file in one exact-size allocation and parse it in memory. This is the same
+        // I/O pattern the pre-0.1.10 code used; going through BufReader/lines() instead issued
+        // thousands of small reads at plugin init and coincided with heap corruption showing up in
+        // other plugins (the training modpack's menu tables). The buffer is dropped once parsed, so
+        // only the component names and their ranges stay resident.
+        let hash_data = std::fs::read_to_string(path)?;
         let mut names = String::new();
         let mut ranges = HashMap::new();
 
-        for line in file.lines() {
-            let line = line?;
+        for line in hash_data.lines() {
             let line = line.trim();
             if line.is_empty() || line.contains('/') {
                 continue;
