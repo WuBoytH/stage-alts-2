@@ -158,9 +158,9 @@ enum SearchKey<'a> {
 }
 
 impl<'a> SearchKey<'a> {
-    pub fn new(lookup: &'a HashMap<Hash40, String>, hash: Hash40) -> Self {
-        match lookup.get(&hash) {
-            Some(unhashed) => Self::Resolved(unhashed.as_str()),
+    pub fn new(lookup: &'a HashLookup, hash: Hash40) -> Self {
+        match lookup.get(hash) {
+            Some(unhashed) => Self::Resolved(unhashed),
             None => Self::Unresolved(hash),
         }
     }
@@ -247,29 +247,28 @@ impl IndexSettable for PathListEntry {
 
 /// Sorts the folder contents (recursively) of a folder such that known hashes (all vanilla file hashes)
 /// are ordered before new files.
-pub fn sort_folder_contents(
-    name: Hash40,
-    search: &mut LoadedSearchSection,
-    lookup: &HashMap<Hash40, String>,
-) {
+pub fn sort_folder_contents(name: Hash40, search: &mut LoadedSearchSection, lookup: &HashLookup) {
     let Ok(folder) = search.get_folder_path_entry_from_hash(name) else {
         log::warn!("Failed to get folder '{}", SearchKey::new(lookup, name));
         return;
     };
 
-    let mut children = BTreeMap::new();
+    // Collect then stable-sort rather than inserting into a BTreeMap: a map keyed on the sort key
+    // silently replaces any child whose key compares equal to an earlier one, which unlinks that
+    // entry from the folder's child list entirely.
+    let mut children = Vec::new();
 
     let mut index = folder.get_first_child_index();
 
     while index < 0x00FF_FFFF {
         let child = &search.get_path_list()[index];
-        children.insert(
+        children.push((
             SearchEntry {
                 key: SearchKey::new(lookup, child.file_name.hash40()),
                 is_folder: child.is_directory(),
             },
             index,
-        );
+        ));
 
         index = child.path.index() as usize;
 
@@ -286,9 +285,11 @@ pub fn sort_folder_contents(
         return;
     };
 
+    children.sort_by(|(a, _), (b, _)| a.cmp(b));
+
     let mut current: &mut dyn IndexSettable = folder;
 
-    for index in children.into_values() {
+    for (_, index) in children {
         current.set_index(Some(index));
         current = &mut search.get_path_list_mut()[index];
     }
@@ -296,14 +297,77 @@ pub fn sort_folder_contents(
     current.set_index(None);
 }
 
-pub fn get_search_lookup() -> HashMap<Hash40, String> {
-    let hash_data = std::fs::read_to_string("sd:/ultimate/stage-alts/Hashes_all").unwrap();
+const HASHES_PATH: &str = "sd:/ultimate/stage-alts/Hashes_all";
 
-    HashMap::from_iter(
-        hash_data
-            .lines()
-            .map(|line| (Hash40::from(line.trim()), line.trim().to_string())),
-    )
+/// Hash to name lookup built from `Hashes_all`.
+///
+/// Only bare path components (lines without a slash) are kept. The folder sort keys on `file_name` hashes and the
+/// pretty printer formats one component at a time, so full paths were never looked up: keeping them meant holding
+/// 743k owned strings (about 80 MB) for the 62k names (about 4 MB) that are actually used. All names live in one
+/// buffer and the map stores ranges into it, so there is a single allocation for the text.
+pub struct HashLookup {
+    names: Box<str>,
+    ranges: HashMap<Hash40, (u32, u32)>,
+}
+
+impl HashLookup {
+    pub fn empty() -> Self {
+        Self {
+            names: Box::from(""),
+            ranges: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> std::io::Result<Self> {
+        // Read the whole file in one exact-size allocation and parse it in memory. This is the same
+        // I/O pattern the pre-0.1.10 code used; going through BufReader/lines() instead issued
+        // thousands of small reads at plugin init and coincided with heap corruption showing up in
+        // other plugins (the training modpack's menu tables). The buffer is dropped once parsed, so
+        // only the component names and their ranges stay resident.
+        let hash_data = std::fs::read_to_string(path)?;
+        let mut names = String::new();
+        let mut ranges = HashMap::new();
+
+        for line in hash_data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.contains('/') {
+                continue;
+            }
+
+            let start = names.len() as u32;
+            names.push_str(line);
+            ranges.insert(Hash40::from(line), (start, names.len() as u32));
+        }
+
+        ranges.shrink_to_fit();
+
+        Ok(Self {
+            names: names.into_boxed_str(),
+            ranges,
+        })
+    }
+
+    pub fn get(&self, hash: Hash40) -> Option<&str> {
+        self.ranges
+            .get(&hash)
+            .map(|(start, end)| &self.names[*start as usize..*end as usize])
+    }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+}
+
+pub fn get_search_lookup() -> HashLookup {
+    match HashLookup::from_file(HASHES_PATH) {
+        Ok(lookup) => lookup,
+        Err(err) => {
+            log::error!(
+                "Failed to read '{HASHES_PATH}': {err}. Search folders will be sorted by hash only and logs will show hashes instead of names."
+            );
+            HashLookup::empty()
+        }
+    }
 }
 
 fn guess_hash(hash: Hash40) -> Option<(usize, bool)> {
