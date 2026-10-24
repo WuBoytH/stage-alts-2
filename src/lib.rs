@@ -102,11 +102,6 @@ unsafe fn initial_loading_hook(ctx: &mut skyline::hooks::InlineCtx) {
 static ALT_NUMBER: Mutex<Option<usize>> = Mutex::new(None);
 static IS_ONLINE: AtomicBool = AtomicBool::new(false);
 
-#[no_mangle]
-pub unsafe extern "C" fn get_match_mode_extern(main: &mut u32, submode: &mut u32) {
-    get_match_mode(main, submode)
-}
-
 #[skyline::from_offset(0x1743870 - 0x1a0)]
 unsafe fn get_match_mode(main: &mut u32, submode: &mut u32);
 

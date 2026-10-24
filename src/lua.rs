@@ -224,6 +224,67 @@ extern "C" fn set_alts(state: *mut lua::lua_State) -> i32 {
     }
 }
 
+unsafe fn push_number(state: *mut lua::lua_State, n: f32) {
+    let top = (state as *mut u8).add(0x10) as *mut *mut lua::bindings::TValue;
+    (**top).value.n = n;
+    (**top).tt = 0x03; // LUA_TNUMFLT
+    *top = (*top).add(1);
+}
+
+extern "C" fn get_panel_name_id(state: *mut lua::lua_State) -> i32 {
+    unsafe {
+        let panel_id = lua::lua_tointegerx(state, -1, std::ptr::null_mut());
+        lua::lua_pop(state, 1);
+
+        let mgr = MANAGER.read();
+        let name = usize::try_from(panel_id)
+            .ok()
+            .and_then(|index| mgr.index_to_ui.get(index))
+            .and_then(|ui| mgr.ui_to_name.get(ui))
+            .map(String::as_str)
+            .unwrap_or("");
+
+        lua::lua_pushlstring(state, name.as_ptr() as _, name.len());
+        1
+    }
+}
+
+extern "C" fn get_panel_rect(state: *mut lua::lua_State) -> i32 {
+    unsafe {
+        let panel_id = lua::lua_tointegerx(state, -1, std::ptr::null_mut());
+        lua::lua_pop(state, 1);
+
+        let rect = panel_entries()
+            .and_then(|entries| usize::try_from(panel_id).ok().filter(|&i| i < entries.len()).map(|i| entries[i].params))
+            .unwrap_or_default();
+
+        for value in rect {
+            push_number(state, value);
+        }
+        4
+    }
+}
+
+extern "C" fn set_panel_rect(state: *mut lua::lua_State) -> i32 {
+    unsafe {
+        let panel_id = lua::lua_tointegerx(state, -5, std::ptr::null_mut());
+        let rect = [
+            lua::lua_tonumberx(state, -4, std::ptr::null_mut()),
+            lua::lua_tonumberx(state, -3, std::ptr::null_mut()),
+            lua::lua_tonumberx(state, -2, std::ptr::null_mut()),
+            lua::lua_tonumberx(state, -1, std::ptr::null_mut()),
+        ];
+        lua::lua_pop(state, 5);
+
+        if let Some(entries) = panel_entries() {
+            if let Some(index) = usize::try_from(panel_id).ok().filter(|&i| i < entries.len()) {
+                entries[index].params = rect;
+            }
+        }
+        0
+    }
+}
+
 unsafe fn push_new_singleton(
     lua_state: *mut lua::lua_State,
     name: &'static str,
@@ -282,6 +343,18 @@ unsafe fn add_to_key_context(ctx: &InlineCtx) {
             func: Some(write_alt_field_to_bgm_id),
         },
         lua::luaL_Reg {
+            name: "get_panel_name_id\0".as_ptr() as _,
+            func: Some(get_panel_name_id),
+        },
+        lua::luaL_Reg {
+            name: "get_panel_rect\0".as_ptr() as _,
+            func: Some(get_panel_rect),
+        },
+        lua::luaL_Reg {
+            name: "set_panel_rect\0".as_ptr() as _,
+            func: Some(set_panel_rect),
+        },
+        lua::luaL_Reg {
             name: std::ptr::null(),
             func: None,
         },
@@ -296,6 +369,12 @@ struct StageEntry {
     params: [f32; 4],
 }
 
+/// The SSS panel vector of the current stage select singleton, if there is one.
+unsafe fn panel_entries() -> Option<&'static mut resources::containers::CppVector<StageEntry>> {
+    let singleton = MANAGER.read().current_singleton?;
+    Some(&mut *((singleton.as_ptr() as *mut u8).add(0x168) as *mut resources::containers::CppVector<StageEntry>))
+}
+
 #[skyline::hook(offset = 0x1b327a0)]
 unsafe fn is_valid_entrance_param(arg: u64, arg2: i32) -> bool {
     let mut manager = MANAGER.write();
@@ -305,9 +384,11 @@ unsafe fn is_valid_entrance_param(arg: u64, arg2: i32) -> bool {
     let vec = &mut *((arg + 0x168) as *mut resources::containers::CppVector<StageEntry>);
 
     manager.index_to_hash.clear();
+    manager.index_to_ui.clear();
 
     for (index, entry) in vec.iter().enumerate() {
         let hash = Hash40(entry.key & 0xFF_FFFF_FFFF);
+        manager.index_to_ui.push(hash);
         let Some(place) = manager.ui_to_place.get(&hash).copied() else {
             log::warn!("Failed to find place id for ui {:#x}", hash.0);
             continue;
@@ -319,7 +400,8 @@ unsafe fn is_valid_entrance_param(arg: u64, arg2: i32) -> bool {
     call_original!(arg, arg2)
 }
 
-pub fn get_ui_hash_to_stage_hash(stage: &[u8]) -> BTreeMap<Hash40, Hash40> {
+/// Parses ui_stage_db into `(ui_stage_id -> stage_place_id, ui_stage_id -> name_id)`.
+pub fn parse_stage_db(stage: &[u8]) -> (BTreeMap<Hash40, Hash40>, BTreeMap<Hash40, String>) {
     let mut reader = Cursor::new(stage);
 
     let param_data = prc::read_stream(&mut reader).unwrap();
@@ -331,6 +413,7 @@ pub fn get_ui_hash_to_stage_hash(stage: &[u8]) -> BTreeMap<Hash40, Hash40> {
     };
 
     let mut map = BTreeMap::new();
+    let mut names = BTreeMap::new();
 
     for param in list.0.iter() {
         let ParamKind::Struct(param) = param else {
@@ -361,6 +444,22 @@ pub fn get_ui_hash_to_stage_hash(stage: &[u8]) -> BTreeMap<Hash40, Hash40> {
             }
         });
 
+        let name_id = param.0.iter().find_map(|(k, v)| {
+            if Hash40(k.0) == Hash40::from("name_id") {
+                let ParamKind::Str(v) = v else {
+                    return None;
+                };
+
+                Some(v.clone())
+            } else {
+                None
+            }
+        });
+
+        if let (Some(ui), Some(name)) = (ui_stage_id, name_id) {
+            names.insert(ui, name);
+        }
+
         match (ui_stage_id, stage_place_id) {
             (Some(ui), Some(place)) => {
                 map.insert(ui, place);
@@ -369,7 +468,7 @@ pub fn get_ui_hash_to_stage_hash(stage: &[u8]) -> BTreeMap<Hash40, Hash40> {
         }
     }
 
-    map
+    (map, names)
 }
 
 #[skyline::hook(offset = 0x3359ad0 + 0x5b0)]

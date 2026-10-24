@@ -217,6 +217,8 @@ pub struct AltManager {
     // For lua
     pub index_to_hash: BTreeMap<usize, Hash40>,
     pub ui_to_place: BTreeMap<Hash40, Hash40>,
+    pub index_to_ui: Vec<Hash40>,
+    pub ui_to_name: BTreeMap<Hash40, String>,
 
     pub current_singleton: Option<NonNull<()>>,
 
@@ -237,7 +239,7 @@ impl AltManager {
         };
 
         self.music_cache = Some(MusicCache::new(stage, bgm));
-        self.ui_to_place = lua::get_ui_hash_to_stage_hash(stage);
+        (self.ui_to_place, self.ui_to_name) = lua::parse_stage_db(stage);
 
         self.stage_data = None;
         self.bgm_data = None;
@@ -251,6 +253,8 @@ impl AltManager {
             backup_searchpaths: BTreeMap::new(),
             index_to_hash: BTreeMap::new(),
             ui_to_place: BTreeMap::new(),
+            index_to_ui: Vec::new(),
+            ui_to_name: BTreeMap::new(),
             current_singleton: None,
             music_cache: None,
             stage_data: None,
